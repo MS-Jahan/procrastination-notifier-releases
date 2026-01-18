@@ -1,0 +1,120 @@
+name: Build and Release with cx_Freeze
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            output_name: FocusWarden-Linux
+          - os: windows-latest
+            output_name: FocusWarden-Windows
+          - os: macos-latest
+            output_name: FocusWarden-macOS
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install cx_Freeze
+        timeout-minutes: 5
+
+      - name: Build with cx_Freeze
+        run: python setup.py build
+        shell: bash
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          BUILD_DIR=$(find build -name "exe.linux-*" -type d)
+          mv "$BUILD_DIR" ${{ matrix.output_name }}
+          cp README.md MACOS_SETUP.md ${{ matrix.output_name }}/
+          tar -czf ${{ matrix.output_name }}-${{ github.ref_name }}.tar.gz ${{ matrix.output_name }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          BUILD_DIR=$(find build -name "exe.win-*" -type d)
+          mv "$BUILD_DIR" ${{ matrix.output_name }}
+          cp README.md MACOS_SETUP.md ${{ matrix.output_name }}/
+          7z a ${{ matrix.output_name }}-${{ github.ref_name }}.zip ${{ matrix.output_name }}
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          BUILD_DIR=$(find build -name "exe.macosx-*" -type d)
+          mv "$BUILD_DIR" ${{ matrix.output_name }}
+          cp README.md MACOS_SETUP.md ${{ matrix.output_name }}/
+          zip -r ${{ matrix.output_name }}-${{ github.ref_name }}.zip ${{ matrix.output_name }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}-${{ github.ref_name }}
+          path: ${{ matrix.output_name }}-${{ github.ref_name }}.*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Focus Warden ${{ github.ref_name }}
+          body: |
+            ## 🎯 Focus Warden ${{ github.ref_name }}
+
+            AI-Powered Productivity Guardian
+
+            ### 📦 Downloads
+            - **Windows**: FocusWarden-Windows-${{ github.ref_name }}.zip
+            - **macOS**: FocusWarden-macOS-${{ github.ref_name }}.zip
+            - **Linux**: FocusWarden-Linux-${{ github.ref_name }}.tar.gz
+
+            ### 🚀 Quick Start
+            1. Download for your OS
+            2. Extract the archive
+            3. Run the executable from the extracted folder
+            4. Enter your Gemini API key
+            5. Start monitoring!
+
+            ### ⚠️ Notes
+            - **macOS**: Right-click → Open first time
+            - **Windows**: Click "More info" → "Run anyway" if warned
+            - Keep all files together in the extracted folder
+          files: ./artifacts/*/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

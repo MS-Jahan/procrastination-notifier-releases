@@ -1,0 +1,206 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            output_name: FocusWarden-Linux
+            output_ext: ""
+          - os: windows-latest
+            output_name: FocusWarden-Windows
+            output_ext: ".exe"
+          - os: macos-latest
+            output_name: FocusWarden-macOS
+            output_ext: ".app"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Get version without 'v' prefix
+        id: get_version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install nuitka ordered-set zstandard
+        timeout-minutes: 10
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install ccache
+
+      - name: Build with Nuitka (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m nuitka \
+            --standalone \
+            --onefile \
+            --enable-plugin=tk-inter \
+            --product-name="Focus Warden" \
+            --product-version="${{ steps.get_version.outputs.version }}" \
+            --company-name="Focus Warden" \
+            --file-description="AI-Powered Productivity Guardian" \
+            --output-filename=${{ matrix.output_name }} \
+            focus_warden.py
+
+      - name: Build with Nuitka (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m nuitka \
+            --standalone \
+            --enable-plugin=tk-inter \
+            --windows-console-mode=disable \
+            --product-name="Focus Warden" \
+            --product-version="${{ steps.get_version.outputs.version }}" \
+            --company-name="Focus Warden" \
+            --file-description="AI-Powered Productivity Guardian" \
+            --output-dir=build-win \
+            focus_warden.py
+
+      - name: Build with Nuitka (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m nuitka \
+            --standalone \
+            --onefile \
+            --enable-plugin=tk-inter \
+            --macos-create-app-bundle \
+            --product-name="Focus Warden" \
+            --product-version="${{ steps.get_version.outputs.version }}" \
+            --company-name="Focus Warden" \
+            --file-description="AI-Powered Productivity Guardian" \
+            focus_warden.py
+
+      - name: Package for distribution (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x ${{ matrix.output_name }}
+          tar -czf ${{ matrix.output_name }}-${{ github.ref_name }}.tar.gz ${{ matrix.output_name }} README.md MACOS_SETUP.md
+
+      - name: Package for distribution (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Rename the dist folder
+          mv build-win/focus_warden.dist ${{ matrix.output_name }}
+          # Copy documentation
+          cp README.md MACOS_SETUP.md ${{ matrix.output_name }}/
+          # Create zip
+          7z a ${{ matrix.output_name }}-${{ github.ref_name }}.zip ${{ matrix.output_name }}
+
+      - name: Package for distribution (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mv focus_warden.app ${{ matrix.output_name }}.app
+          zip -r ${{ matrix.output_name }}-${{ github.ref_name }}.zip ${{ matrix.output_name }}.app README.md MACOS_SETUP.md
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}-${{ github.ref_name }}
+          path: |
+            ${{ matrix.output_name }}-${{ github.ref_name }}.*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Focus Warden ${{ github.ref_name }}
+          body: |
+            ## 🎯 Focus Warden ${{ github.ref_name }}
+
+            AI-Powered Productivity Guardian - Keep yourself focused and on track!
+
+            ### 📦 Downloads
+
+            - **Windows**: Download `FocusWarden-Windows-${{ github.ref_name }}.zip`
+            - **macOS**: Download `FocusWarden-macOS-${{ github.ref_name }}.zip` - See [macOS Setup Guide](MACOS_SETUP.md) for permissions
+            - **Linux**: Download `FocusWarden-Linux-${{ github.ref_name }}.tar.gz`
+
+            ### 🚀 Quick Start
+
+            1. Download the appropriate file for your OS
+            2. Extract the archive
+            3. Run the executable
+            4. Enter your Google Gemini API key
+            5. Start monitoring!
+
+            ### ⚠️ Important Notes
+
+            **macOS Users**:
+            - First launch: Right-click → Open (to bypass Gatekeeper)
+            - Grant Screen Recording permission in System Settings
+            - Read [MACOS_SETUP.md](MACOS_SETUP.md) for detailed instructions
+
+            **Windows Users**:
+            - Windows Defender may show a warning (normal for unsigned apps)
+            - Click "More info" → "Run anyway"
+
+            ### 📋 What's New
+
+            - Cross-platform notifications
+            - Project history with Ctrl+H
+            - Ctrl+A text selection
+            - macOS permission detection
+            - Bug fixes and improvements
+
+            ### 🐛 Report Issues
+
+            Found a bug? [Create an issue](https://github.com/${{ github.repository }}/issues)
+          files: |
+            ./artifacts/*/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
