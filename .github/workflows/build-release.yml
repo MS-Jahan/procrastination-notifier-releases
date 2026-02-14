@@ -1,0 +1,135 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to checkout from private repo (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+    - name: Checkout Public Repo
+      uses: actions/checkout@v4
+
+    - name: Checkout Private Source
+      uses: actions/checkout@v4
+      with:
+        repository: MS-Jahan/procrastination-notifier
+        token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+        path: private_source
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r private_source/requirements.txt
+        pip install cx_Freeze
+      shell: bash
+
+    - name: Install Linux Dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-tk
+
+    - name: Build Executable
+      working-directory: private_source
+      run: |
+        python setup.py build_exe
+      shell: bash
+
+    - name: Zip Build Output
+      run: |
+        cd private_source/build
+        # Find the directory starting with "exe." (cx_Freeze default)
+        EXE_DIR=$(find . -maxdepth 1 -type d -name "exe.*" | head -n 1)
+        
+        if [ -z "$EXE_DIR" ]; then
+          echo "Error: Build directory not found!"
+          ls -R
+          exit 1
+        fi
+        
+        # Determine zip name based on OS
+        if [ "${{ runner.os }}" == "Windows" ]; then
+          ZIP_NAME="FocusWarden-Windows.zip"
+        elif [ "${{ runner.os }}" == "macOS" ]; then
+          ZIP_NAME="FocusWarden-macOS.zip"
+        else
+          ZIP_NAME="FocusWarden-Linux.zip"
+        fi
+        
+        echo "Zipping $EXE_DIR to $ZIP_NAME..."
+        
+        # Zip safely across platforms using python
+        python -c "import shutil; shutil.make_archive('$ZIP_NAME'.replace('.zip',''), 'zip', '$EXE_DIR')"
+        
+        # Move zip to a known location for upload
+        mv "$ZIP_NAME" ../../"$ZIP_NAME"
+
+      shell: bash
+
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-${{ matrix.os }}
+        path: FocusWarden-*.zip
+        retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build-windows-latest
+        path: .
+
+    - name: Download macOS Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build-macos-latest
+        path: .
+
+    - name: Download Linux Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build-ubuntu-latest
+        path: .
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          FocusWarden-Windows.zip
+          FocusWarden-macOS.zip
+          FocusWarden-Linux.zip
+        draft: true
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
